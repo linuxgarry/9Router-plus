@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useNotificationStore } from "@/store/notificationStore";
+import SslCard from "./SslCard";
 
 const TUNNEL_BENEFITS = [
   { icon: "public", title: "Access Anywhere", desc: "Use your API from any network" },
@@ -55,6 +57,7 @@ const CAVEMAN_LEVELS = [
   { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
 ];
 export default function APIPageClient({ machineId }) {
+  const notify = useNotificationStore();
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1018,6 +1021,8 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
       </Card>
+
+      <SslCard notify={notify} />
 
       {/* Token Saver (RTK + Caveman) */}
       <Card id="rtk">

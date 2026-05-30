@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 
@@ -17,6 +17,9 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   const [importing, setImporting] = useState(false);
   const [autoDetecting, setAutoDetecting] = useState(false);
   const [autoDetected, setAutoDetected] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef(null);
 
   // Auto-detect token when import method is selected
   useEffect(() => {
@@ -58,28 +61,52 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   };
 
   const handleImportToken = async () => {
-    if (!refreshToken.trim()) {
-      setError("Please enter a refresh token");
+    const raw = refreshToken.trim();
+    if (!raw) {
+      setError("Please enter a refresh token or paste an export");
       return;
     }
 
     setImporting(true);
     setError(null);
+    setImportResult(null);
+
+    // Decide between legacy single-token path and the new payload path.
+    // - Single JSON object/array → parse and send as `payload`
+    // - Multiple JSON blobs concatenated → send raw text as `payload` for
+    //   the server-side splitter to handle
+    // - Anything else → treat as a single refresh token (legacy shape)
+    let body;
+    if (raw.startsWith("{") || raw.startsWith("[")) {
+      try {
+        body = { payload: JSON.parse(raw) };
+      } catch {
+        // Fall back to sending the raw text; the server splits multi-JSON.
+        body = { payload: raw };
+      }
+    } else {
+      body = { refreshToken: raw };
+    }
 
     try {
       const res = await fetch("/api/oauth/kiro/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken: refreshToken.trim() }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();
 
-      if (!res.ok) {
+      if (!res.ok || data.success === false) {
         throw new Error(data.error || "Import failed");
       }
 
-      // Success - notify parent to refresh connections
+      setImportResult({
+        imported: data.imported || (data.connection ? [data.connection] : []),
+        failed: data.failed || [],
+      });
+
+      // Notify parent so the connection list refreshes.
       onMethodSelect("import");
     } catch (err) {
       setError(err.message);
@@ -98,6 +125,59 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
 
   const handleSocialLogin = (provider) => {
     onMethodSelect("social", { provider });
+  };
+
+  const appendText = (incoming) => {
+    if (!incoming) return;
+    setRefreshToken((prev) => {
+      const trimmed = prev.trim();
+      return trimmed ? `${trimmed}\n${incoming.trim()}` : incoming.trim();
+    });
+  };
+
+  const readFiles = async (files) => {
+    if (!files || files.length === 0) return;
+    setError(null);
+    try {
+      const texts = await Promise.all(
+        Array.from(files).map((f) => f.text())
+      );
+      texts.forEach(appendText);
+    } catch (err) {
+      setError(`Failed to read file: ${err.message}`);
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await readFiles(e.dataTransfer.files);
+      return;
+    }
+    // Plain text drop (e.g. drag selected JSON from another window)
+    const text = e.dataTransfer.getData("text");
+    if (text) appendText(text);
+  };
+
+  const handleFilePick = (e) => {
+    readFiles(e.target.files);
+    // Reset so the same file can be picked again
+    e.target.value = "";
   };
 
   return (
@@ -184,7 +264,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                 <div className="flex-1">
                   <h3 className="font-semibold mb-1">Import Token</h3>
                   <p className="text-sm text-text-muted">
-                    Paste refresh token from Kiro IDE.
+                    Paste a refresh token from Kiro IDE, or a Kiro Account Manager export to import multiple accounts.
                   </p>
                 </div>
               </div>
@@ -335,23 +415,82 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                     <div className="flex gap-2">
                       <span className="material-symbols-outlined text-blue-600 dark:text-blue-400">info</span>
                       <p className="text-sm text-blue-800 dark:text-blue-200">
-                        Kiro IDE not detected. Please paste your refresh token manually.
+                        Paste a refresh token, a single JSON record, an array, or a Kiro Account Manager export to import in bulk.
                       </p>
                     </div>
                   </div>
                 )}
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Refresh Token <span className="text-red-500">*</span>
-                  </label>
-                  <Input
-                    value={refreshToken}
-                    onChange={(e) => setRefreshToken(e.target.value)}
-                    placeholder="Token will be auto-filled..."
-                    className="font-mono text-sm"
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium">
+                      Refresh Token / JSON <span className="text-red-500">*</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-xs text-primary hover:underline flex items-center gap-1"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">attach_file</span>
+                      Choose file
+                    </button>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".json,.txt,application/json,text/plain"
+                    multiple
+                    onChange={handleFilePick}
+                    className="hidden"
                   />
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragEnter={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`relative rounded-[10px] transition-colors ${
+                      dragActive
+                        ? "ring-2 ring-brand-500/60 bg-brand-500/5"
+                        : ""
+                    }`}
+                  >
+                    <textarea
+                      value={refreshToken}
+                      onChange={(e) => setRefreshToken(e.target.value)}
+                      placeholder={'Paste, drag JSON here, or click Choose file.\n\naorAAAAAG...\n\nor\n\n{ "refreshToken": "...", "provider": "BuilderId", "clientId": "...", "clientSecret": "..." }\n\nor a Kiro Account Manager export'}
+                      rows={8}
+                      spellCheck={false}
+                      className="w-full px-3 py-2.5 text-sm bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40 font-mono"
+                    />
+                    {dragActive && (
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[10px] bg-brand-500/10 text-sm font-medium text-primary">
+                        Drop JSON file to import
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-xs text-text-muted mt-1">
+                    Required: <code>refreshToken</code>. Optional: <code>provider</code> (BuilderId / Enterprise / Github / Google), <code>clientId</code>, <code>clientSecret</code>. Drop one or more JSON files to merge.
+                  </p>
                 </div>
+
+                {importResult && importResult.imported.length > 0 && (
+                  <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-lg border border-green-200 dark:border-green-800">
+                    <p className="text-sm text-green-800 dark:text-green-200">
+                      Imported {importResult.imported.length} account{importResult.imported.length === 1 ? "" : "s"}
+                      {importResult.failed.length > 0 ? `, ${importResult.failed.length} failed` : ""}.
+                    </p>
+                  </div>
+                )}
+
+                {importResult && importResult.failed.length > 0 && (
+                  <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800 max-h-32 overflow-auto">
+                    <ul className="text-xs text-amber-800 dark:text-amber-200 space-y-1">
+                      {importResult.failed.map((f, i) => (
+                        <li key={i}>#{f.index + 1}: {f.error}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {error && (
                   <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800">

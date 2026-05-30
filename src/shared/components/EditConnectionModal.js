@@ -8,6 +8,17 @@ import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 
+const CLASH_PROXY_URL = "http://127.0.0.1:7890";
+
+function deriveProxyMode(connection) {
+  const psd = connection?.providerSpecificData || {};
+  if (psd.proxyPoolId) return "pool";
+  if (psd.connectionProxyEnabled && psd.connectionProxyUrl) {
+    return psd.connectionProxyUrl === CLASH_PROXY_URL ? "clash" : "custom";
+  }
+  return "direct";
+}
+
 export default function EditConnectionModal({ isOpen, connection, proxyPools, onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: "",
@@ -21,35 +32,62 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     organization: "",
   });
   const [cloudflareData, setCloudflareData] = useState({ accountId: "" });
+
+  // Proxy mode state
+  const [proxyMode, setProxyMode] = useState("direct");
+  const [proxyCustomUrl, setProxyCustomUrl] = useState("");
+  const [proxyNoProxy, setProxyNoProxy] = useState("");
+  const [proxyClashSubId, setProxyClashSubId] = useState("");
+  const [proxyPoolId, setProxyPoolId] = useState("");
+  const [clashSubs, setClashSubs] = useState([]);
+
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [egressResult, setEgressResult] = useState(null);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (connection) {
-      setFormData({
-        name: connection.name || "",
-        priority: connection.priority || 1,
-        apiKey: "",
+    if (!connection) return;
+    setFormData({
+      name: connection.name || "",
+      priority: connection.priority || 1,
+      apiKey: "",
+    });
+    if (connection.provider === "azure" && connection.providerSpecificData) {
+      setAzureData({
+        azureEndpoint: connection.providerSpecificData.azureEndpoint || "",
+        apiVersion: connection.providerSpecificData.apiVersion || "2024-10-01-preview",
+        deployment: connection.providerSpecificData.deployment || "",
+        organization: connection.providerSpecificData.organization || "",
       });
-      // Load Azure-specific data if present
-      if (connection.provider === "azure" && connection.providerSpecificData) {
-        setAzureData({
-          azureEndpoint: connection.providerSpecificData.azureEndpoint || "",
-          apiVersion: connection.providerSpecificData.apiVersion || "2024-10-01-preview",
-          deployment: connection.providerSpecificData.deployment || "",
-          organization: connection.providerSpecificData.organization || "",
-        });
-      }
-      if (connection.provider === "cloudflare-ai" && connection.providerSpecificData) {
-        setCloudflareData({ accountId: connection.providerSpecificData.accountId || "" });
-      }
-      setTestResult(null);
-      setValidationResult(null);
     }
+    if (connection.provider === "cloudflare-ai" && connection.providerSpecificData) {
+      setCloudflareData({ accountId: connection.providerSpecificData.accountId || "" });
+    }
+
+    const psd = connection.providerSpecificData || {};
+    setProxyMode(deriveProxyMode(connection));
+    setProxyCustomUrl(psd.connectionProxyUrl && psd.connectionProxyUrl !== CLASH_PROXY_URL ? psd.connectionProxyUrl : "");
+    setProxyNoProxy(psd.connectionNoProxy || "");
+    setProxyClashSubId(psd.proxyClashSubscriptionId || "");
+    setProxyPoolId(psd.proxyPoolId || "");
+
+    setTestResult(null);
+    setValidationResult(null);
   }, [connection]);
+
+  // Load clash subscriptions when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    fetch("/api/clash-subscriptions", { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : { subscriptions: [] })
+      .then((d) => { if (!cancelled) setClashSubs(d.subscriptions || []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isOpen]);
 
   const isOAuth = connection?.authType === "oauth";
   const isAzure = connection?.provider === "azure";
@@ -62,10 +100,15 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     if (!connection?.provider) return;
     setTesting(true);
     setTestResult(null);
+    setEgressResult(null);
     try {
-      const res = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
-      const data = await res.json();
-      setTestResult(data.valid ? "success" : "failed");
+      const [testRes, egressRes] = await Promise.all([
+        fetch(`/api/providers/${connection.id}/test`, { method: "POST" }).then(r => r.json()).catch(() => null),
+        fetch(`/api/providers/${connection.id}/test-egress`, { method: "POST" }).then(r => r.json()).catch(() => null),
+      ]);
+      setTestResult(testRes?.valid ? "success" : "failed");
+      if (egressRes?.ip) setEgressResult(egressRes);
+      else if (egressRes) setEgressResult({ ...egressRes, ok: false });
     } catch {
       setTestResult("failed");
     } finally {
@@ -95,6 +138,31 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     } finally {
       setValidating(false);
     }
+  };
+
+  const buildProxyUpdates = () => {
+    const psd = { ...(connection?.providerSpecificData || {}) };
+    // Reset all proxy fields, then set per mode
+    psd.proxyPoolId = null;
+    psd.connectionProxyEnabled = false;
+    psd.connectionProxyUrl = "";
+    psd.connectionNoProxy = "";
+    psd.proxyClashSubscriptionId = null;
+
+    if (proxyMode === "custom" && proxyCustomUrl.trim()) {
+      psd.connectionProxyEnabled = true;
+      psd.connectionProxyUrl = proxyCustomUrl.trim();
+      psd.connectionNoProxy = proxyNoProxy.trim();
+    } else if (proxyMode === "clash") {
+      psd.connectionProxyEnabled = true;
+      psd.connectionProxyUrl = CLASH_PROXY_URL;
+      psd.connectionNoProxy = proxyNoProxy.trim();
+      if (proxyClashSubId) psd.proxyClashSubscriptionId = proxyClashSubId;
+    } else if (proxyMode === "pool" && proxyPoolId) {
+      psd.proxyPoolId = proxyPoolId;
+    }
+
+    return psd;
   };
 
   const handleSubmit = async () => {
@@ -137,20 +205,36 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           updates.lastErrorAt = null;
         }
       }
-      
-      // Add Azure-specific data if this is an Azure connection
+
+      // Merge proxy + provider-specific fields into providerSpecificData
+      const psd = buildProxyUpdates();
       if (isAzure) {
-        updates.providerSpecificData = {
+        Object.assign(psd, {
           azureEndpoint: azureData.azureEndpoint,
           apiVersion: azureData.apiVersion,
           deployment: azureData.deployment,
           organization: azureData.organization,
-        };
+        });
       }
       if (isCloudflareAi) {
-        updates.providerSpecificData = { accountId: cloudflareData.accountId };
+        psd.accountId = cloudflareData.accountId;
       }
-      
+      updates.providerSpecificData = psd;
+
+      // Mirror proxy fields onto the top-level body too. The PUT
+      // /api/providers/[id] handler reads them via normalizeProxyConfig
+      // and normalizeProxyPoolUpdate from body.* directly — without
+      // these mirrors, the merge happily writes the right values into
+      // providerSpecificData but the reset path (`hasProxyPoolField` /
+      // `hasAnyProxyField` both false) never fires, so the inserted
+      // values can race with the existing-data spread and reads stay
+      // stale. Copying the keys to top-level keeps the two code paths
+      // aligned.
+      updates.proxyPoolId = psd.proxyPoolId ?? null;
+      updates.connectionProxyEnabled = psd.connectionProxyEnabled ?? false;
+      updates.connectionProxyUrl = psd.connectionProxyUrl || "";
+      updates.connectionNoProxy = psd.connectionNoProxy || "";
+
       await onSave(updates);
     } finally {
       setSaving(false);
@@ -158,6 +242,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   };
 
   if (!connection) return null;
+
+  const activePools = (proxyPools || []).filter((p) => p.isActive !== false);
 
   return (
     <Modal isOpen={isOpen} title="Edit Connection" onClose={onClose}>
@@ -180,6 +266,105 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
         />
+
+        {/* ── Proxy mode picker ──────────────────────────────────── */}
+        <div className="rounded-lg border border-black/10 dark:border-white/10 p-3 flex flex-col gap-3">
+          <div>
+            <p className="text-sm font-medium">代理设置</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              这条连接发请求时走哪条代理。三种模式互斥。
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            {[
+              { v: "direct", label: "直连" },
+              { v: "custom", label: "自定义 SOCKS5/HTTP" },
+              { v: "clash", label: "Clash 订阅" },
+              { v: "pool", label: "自建代理池" },
+            ].map((opt) => (
+              <label
+                key={opt.v}
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded border cursor-pointer transition-colors ${
+                  proxyMode === opt.v
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="proxyMode"
+                  checked={proxyMode === opt.v}
+                  onChange={() => setProxyMode(opt.v)}
+                  className="size-3"
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+
+          {proxyMode === "custom" && (
+            <div className="flex flex-col gap-2">
+              <Input
+                label="代理 URL"
+                value={proxyCustomUrl}
+                onChange={(e) => setProxyCustomUrl(e.target.value)}
+                placeholder="socks5://user:pass@host:1080  或  http://host:8080"
+                hint="支持 http / https / socks5。带认证写在 URL 里。"
+              />
+              <Input
+                label="No Proxy(可选)"
+                value={proxyNoProxy}
+                onChange={(e) => setProxyNoProxy(e.target.value)}
+                placeholder="localhost,127.0.0.1,*.internal"
+                hint="逗号分隔的不走代理的主机/域名。"
+              />
+            </div>
+          )}
+
+          {proxyMode === "clash" && (
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium">订阅</label>
+              <select
+                value={proxyClashSubId}
+                onChange={(e) => setProxyClashSubId(e.target.value)}
+                className="px-3 py-2 text-sm bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:outline-none"
+              >
+                <option value="">默认(全部已加载订阅,GLOBAL 选择)</option>
+                {clashSubs.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} · {s.nodeCount} 节点
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-text-muted">
+                请求会走 mihomo 主代理 <code>{CLASH_PROXY_URL}</code>。订阅在「代理池」页面管理,关闭这里只是不走 mihomo。
+              </p>
+            </div>
+          )}
+
+          {proxyMode === "pool" && (
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium">代理池</label>
+              <select
+                value={proxyPoolId}
+                onChange={(e) => setProxyPoolId(e.target.value)}
+                className="px-3 py-2 text-sm bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:outline-none"
+              >
+                <option value="">— 选择一个代理池 —</option>
+                {activePools.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              {activePools.length === 0 && (
+                <p className="text-xs text-text-muted">
+                  尚无 active 代理池。先去「代理池」页面添加或激活。
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         {!isOAuth && (
           <>
@@ -244,14 +429,34 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         )}
 
         {!isCompatible && !isAzure && !isCloudflareAi && (
-          <div className="flex items-center gap-3">
-            <Button onClick={handleTest} variant="secondary" disabled={testing}>
-              {testing ? "Testing..." : "Test Connection"}
-            </Button>
-            {testResult && (
-              <Badge variant={testResult === "success" ? "success" : "error"}>
-                {testResult === "success" ? "Valid" : "Failed"}
-              </Badge>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <Button onClick={handleTest} variant="secondary" disabled={testing}>
+                {testing ? "Testing..." : "Test Connection"}
+              </Button>
+              {testResult && (
+                <Badge variant={testResult === "success" ? "success" : "error"}>
+                  {testResult === "success" ? "Valid" : "Failed"}
+                </Badge>
+              )}
+            </div>
+            {egressResult && (
+              <div className="rounded-md bg-black/[0.03] dark:bg-white/[0.03] px-3 py-2 text-xs">
+                <p className="font-medium text-text-main mb-1">出口信息(经代理)</p>
+                {egressResult.ok ? (
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-text-muted">
+                    <span>模式: <code>{egressResult.mode}</code></span>
+                    {egressResult.proxyUrl && <span>代理: <code>{egressResult.proxyUrl}</code></span>}
+                    {egressResult.ip && <span>IP: <code className="text-primary">{egressResult.ip}</code></span>}
+                    {egressResult.country && <span>国家: <code className="text-primary">{egressResult.country}</code></span>}
+                    {egressResult.city && <span>城市: <code>{egressResult.city}</code></span>}
+                    {egressResult.org && <span title={egressResult.org}>ASN: <code>{(egressResult.org || "").slice(0, 30)}</code></span>}
+                  </div>
+                ) : (
+                  <p className="text-yellow-700 dark:text-yellow-400">无法获取出口 IP — 检查代理是否可达,或者 IP 检测接口不通</p>
+                )}
+                {egressResult.source && <p className="text-text-muted mt-1 text-[10px]">来源: {egressResult.source}</p>}
+              </div>
             )}
           </div>
         )}
@@ -283,4 +488,3 @@ EditConnectionModal.propTypes = {
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
 };
-

@@ -17,6 +17,7 @@ import {
 } from "@/lib/tunnel";
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
+import { autoStartCaddyIfEnabled } from "@/lib/ssl";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -44,6 +45,7 @@ const g = global.__appSingleton ??= {
   mitmStartInProgress: false,
   tunnelAutoResumed: false,
   tailscaleAutoResumed: false,
+  sslAutoStarted: false,
 };
 
 export async function initializeApp() {
@@ -63,6 +65,16 @@ export async function initializeApp() {
       g.tailscaleAutoResumed = true;
       console.log("[InitApp] Tailscale was enabled, auto-resuming...");
       safeRestartTailscale("startup").catch((e) => console.log("[InitApp] Tailscale resume failed:", e.message));
+    }
+
+    // Auto-start caddy SSL if the user opted in (once per process).
+    // Independent of tunnel/tailscale: caddy state lives under
+    // /app/data/caddy and is managed via supervisor, so we just consult
+    // its own config file rather than the global settings table.
+    if (!g.sslAutoStarted) {
+      g.sslAutoStarted = true;
+      try { autoStartCaddyIfEnabled(); }
+      catch (e) { console.log("[InitApp] SSL auto-start crashed:", e.message); }
     }
 
     if (!g.signalHandlersRegistered) {

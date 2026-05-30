@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import ClashSubscriptionCard from "./ClashSubscriptionCard";
+import MihomoHealthBadge from "./MihomoHealthBadge";
+import WarpAccountsCard from "./WarpAccountsCard";
+import IpCheckUrlsCard from "./IpCheckUrlsCard";
+import TailscaleNeighborsCard from "./TailscaleNeighborsCard";
 
 function getStatusVariant(status) {
   if (status === "active") return "success";
@@ -51,6 +56,7 @@ export default function ProxyPoolsPage() {
   const [healthProgress, setHealthProgress] = useState({ current: 0, total: 0 });
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const relayMenuRef = useRef(null);
   const notify = useNotificationStore();
 
@@ -168,10 +174,21 @@ export default function ProxyPoolsPage() {
     });
   };
 
-  const handleTest = async (proxyPoolId) => {
-    setTestingId(proxyPoolId);
+  const handleTest = async (pool) => {
+    setTestingId(pool.id);
     try {
-      const res = await fetch(`/api/proxy-pools/${proxyPoolId}/test`, { method: "POST" });
+      // mihomo-aware nodes (clashProxy / WARP wireguard / source=warp) go through
+      // a real listener bind + 204 probe + IP geo lookup.
+      // Plain HTTP/SOCKS proxyUrl pools fall back to the legacy direct probe.
+      const useMihomo = !!pool.clashProxy || pool.source === "warp" || pool.type === "wireguard";
+      const url = useMihomo
+        ? `/api/proxy-pools/${pool.id}/mihomo-test`
+        : `/api/proxy-pools/${pool.id}/test`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: useMihomo ? JSON.stringify({}) : undefined,
+      });
       const data = await res.json();
 
       if (!res.ok) {
@@ -180,7 +197,16 @@ export default function ProxyPoolsPage() {
       }
 
       await fetchProxyPools();
-      notify.success(data.ok ? "Proxy test passed" : "Proxy test failed");
+      const latency = data.latency ?? data.elapsedMs;
+      const geo = [data.country, data.city].filter(Boolean).join(" / ");
+      if (data.ok) {
+        const parts = [pool.name];
+        if (latency > 0) parts.push(`${latency}ms`);
+        if (data.exitIp) parts.push(geo ? `${data.exitIp} (${geo})` : data.exitIp);
+        notify.success(parts.join(": ").replace(": ", ": "));
+      } else {
+        notify.error(`${pool.name}: ${data.status || data.error || "down"}`);
+      }
     } catch (error) {
       console.log("Error testing proxy pool:", error);
       notify.error("Failed to test proxy");
@@ -216,21 +242,25 @@ export default function ProxyPoolsPage() {
   const bulkSetActive = async (isActive) => {
     const targets = selectedIds.length > 0 ? selectedIds : proxyPools.map((p) => p.id);
     if (targets.length === 0) return;
+    const verb = isActive ? "Activating" : "Deactivating";
     setBulkBusy(true);
+    notify.info?.(`${verb} ${targets.length} pools…`);
     try {
-      let ok = 0; let failed = 0;
-      for (const id of targets) {
-        try {
-          const res = await fetch(`/api/proxy-pools/${id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ isActive }),
-          });
-          if (res.ok) ok += 1; else failed += 1;
-        } catch { failed += 1; }
+      const res = await fetch("/api/proxy-pools/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: targets, action: "set-active", isActive }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notify.error(data.error || `Batch failed (HTTP ${res.status})`);
+        return;
       }
       await fetchProxyPools();
-      notify.success(`${isActive ? "Activated" : "Deactivated"} ${ok}${failed ? `, failed ${failed}` : ""}`);
+      const verbDone = isActive ? "Activated" : "Deactivated";
+      notify.success(`${verbDone} ${data.ok}${data.failed ? `, ${data.failed} failed` : ""}`);
+    } catch (e) {
+      notify.error(`Batch error: ${e.message}`);
     } finally {
       setBulkBusy(false);
     }
@@ -244,19 +274,23 @@ export default function ProxyPoolsPage() {
       onConfirm: async () => {
         setConfirmState(null);
         setBulkBusy(true);
+        notify.info?.(`Deleting ${selectedIds.length} pools…`);
         try {
-          let ok = 0; let blocked = 0; let failed = 0;
-          for (const id of selectedIds) {
-            try {
-              const res = await fetch(`/api/proxy-pools/${id}`, { method: "DELETE" });
-              if (res.ok) ok += 1;
-              else if (res.status === 409) blocked += 1;
-              else failed += 1;
-            } catch { failed += 1; }
+          const res = await fetch("/api/proxy-pools/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: selectedIds, action: "delete" }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            notify.error(data.error || `Batch delete failed (HTTP ${res.status})`);
+            return;
           }
           await fetchProxyPools();
           clearSelection();
-          notify.success(`Deleted ${ok}${blocked ? `, ${blocked} bound` : ""}${failed ? `, ${failed} failed` : ""}`);
+          notify.success(`Deleted ${data.ok}${data.failed ? `, ${data.failed} failed` : ""}`);
+        } catch (e) {
+          notify.error(`Delete error: ${e.message}`);
         } finally {
           setBulkBusy(false);
         }
@@ -281,7 +315,15 @@ export default function ProxyPoolsPage() {
         const pool = queue.shift();
         if (!pool) break;
         try {
-          const res = await fetch(`/api/proxy-pools/${pool.id}/test`, { method: "POST" });
+          const useMihomo = !!pool.clashProxy || pool.source === "warp" || pool.type === "wireguard";
+          const url = useMihomo
+            ? `/api/proxy-pools/${pool.id}/mihomo-test`
+            : `/api/proxy-pools/${pool.id}/test`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: useMihomo ? JSON.stringify({}) : undefined,
+          });
           const data = await res.json();
           if (res.ok && data.ok) alive += 1; else deadIds.push(pool.id);
         } catch {
@@ -563,6 +605,48 @@ export default function ProxyPoolsPage() {
     [proxyPools]
   );
 
+  const [collapsedGroups, setCollapsedGroups] = useState({});
+
+  const groupedPools = useMemo(() => {
+    const groups = new Map();
+    for (const pool of proxyPools) {
+      const key = pool.source || "Manual / Other";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(pool);
+    }
+    const list = Array.from(groups.entries()).map(([source, pools]) => ({
+      source,
+      pools,
+      activeCount: pools.filter((p) => p.isActive).length,
+    }));
+    list.sort((a, b) => b.pools.length - a.pools.length);
+    return list;
+  }, [proxyPools]);
+
+  const totalGroups = groupedPools.length;
+  const allCollapsed = totalGroups > 0 && groupedPools.every((g) => collapsedGroups[g.source]);
+  const toggleGroup = (source) =>
+    setCollapsedGroups((prev) => ({ ...prev, [source]: !prev[source] }));
+  const setAllCollapsed = (collapsed) => {
+    const next = {};
+    for (const g of groupedPools) next[g.source] = collapsed;
+    setCollapsedGroups(next);
+  };
+
+  useEffect(() => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const g of groupedPools) {
+        if (next[g.source] === undefined && g.pools.length > 50) {
+          next[g.source] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [groupedPools]);
+
   if (loading) {
     return (
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-1 sm:gap-6 sm:px-0">
@@ -577,6 +661,9 @@ export default function ProxyPoolsPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
+          <div className="mt-2">
+            <MihomoHealthBadge refreshKey={refreshKey} />
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
@@ -636,6 +723,32 @@ export default function ProxyPoolsPage() {
         </div>
       </div>
 
+      <ClashSubscriptionCard
+        notify={notify}
+        onLoaded={() => {
+          fetchProxyPools();
+          setRefreshKey((k) => k + 1);
+        }}
+      />
+
+      <WarpAccountsCard
+        notify={notify}
+        onChanged={() => {
+          fetchProxyPools();
+          setRefreshKey((k) => k + 1);
+        }}
+      />
+
+      <IpCheckUrlsCard notify={notify} />
+
+      <TailscaleNeighborsCard
+        notify={notify}
+        onChanged={() => {
+          fetchProxyPools();
+          setRefreshKey((k) => k + 1);
+        }}
+      />
+
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {proxyPools.length > 0 && (
@@ -671,13 +784,13 @@ export default function ProxyPoolsPage() {
               {selectedIds.length > 0 && (
                 <>
                   <Button size="sm" variant="secondary" icon="toggle_on" onClick={() => bulkSetActive(true)} disabled={bulkBusy || healthChecking}>
-                    Activate
+                    {bulkBusy ? "Working..." : "Activate"}
                   </Button>
                   <Button size="sm" variant="secondary" icon="toggle_off" onClick={() => bulkSetActive(false)} disabled={bulkBusy || healthChecking}>
-                    Deactivate
+                    {bulkBusy ? "Working..." : "Deactivate"}
                   </Button>
                   <Button size="sm" variant="secondary" icon="delete" onClick={bulkDelete} disabled={bulkBusy || healthChecking}>
-                    Delete
+                    {bulkBusy ? "Working..." : "Delete"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={clearSelection} disabled={bulkBusy || healthChecking}>
                     Clear
