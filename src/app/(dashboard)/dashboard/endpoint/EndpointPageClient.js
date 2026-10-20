@@ -14,12 +14,15 @@ import {
 } from "./endpointConstants";
 import { clientPingUrl, clientPingAny } from "./endpointPing";
 import useSettingsStore from "@/store/settingsStore";
+import { useNotificationStore } from "@/store/notificationStore";
 import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
+import SslCard from "./SslCard";
 export default function APIPageClient({ machineId }) {
+  const notify = useNotificationStore();
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -974,6 +977,8 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
       </Card>
+
+      <SslCard notify={notify} />
 
       {/* API Keys */}
       <Card id="require-api-key">

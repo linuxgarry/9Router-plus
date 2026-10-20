@@ -75,6 +75,22 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_pp_status ON proxyPools(testStatus)",
     ],
   },
+  clashSubscriptions: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      url: "TEXT NOT NULL",
+      name: "TEXT",
+      enabled: "INTEGER DEFAULT 1",
+      nodeCount: "INTEGER DEFAULT 0",
+      lastLoadedAt: "TEXT",
+      data: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cs_enabled ON clashSubscriptions(enabled)",
+    ],
+  },
   apiKeys: {
     columns: {
       id: "TEXT PRIMARY KEY",

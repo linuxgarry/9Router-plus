@@ -16,6 +16,7 @@ import {
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
+import { autoStartCaddyIfEnabled } from "@/lib/ssl";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -47,6 +48,7 @@ const g = global.__appSingleton ??= {
   mitmStartInProgress: false,
   tunnelAutoResumed: false,
   tailscaleAutoResumed: false,
+  sslAutoStarted: false,
 };
 
 export async function initializeApp() {
@@ -98,6 +100,16 @@ async function runHeavyStartup() {
   }
 
   if (settings.tunnelEnabled) ensureCloudflared().catch(() => {});
+
+  // Auto-start caddy SSL if the user opted in (once per process).
+  // Independent of tunnel/tailscale: caddy state lives under /app/data/caddy
+  // and is managed via supervisor, so consult its own config file.
+  if (!g.sslAutoStarted) {
+    g.sslAutoStarted = true;
+    try { autoStartCaddyIfEnabled(); }
+    catch (e) { console.log("[InitApp] SSL auto-start crashed:", e.message); }
+  }
+
 
   if (settings.mitmEnabled) {
     // Sync mitmAlias DB → JSON cache so standalone MITM server can read it.

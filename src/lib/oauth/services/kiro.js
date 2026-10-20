@@ -11,6 +11,22 @@ import { KIRO_CONFIG, assertValidAwsRegion } from "../constants/oauth.js";
 
 const KIRO_AUTH_SERVICE = "https://prod.us-east-1.auth.desktop.kiro.dev";
 
+/**
+ * Normalize a provider hint coming from a Kiro Account Manager export.
+ * Accepts (case-insensitive): "BuilderId" | "Enterprise" | "Github" | "Google".
+ * Returns one of: "builder-id" | "idc" | "github" | "google" | null.
+ */
+export function normalizeKiroProvider(value) {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (!v) return null;
+  if (v === "builderid" || v === "builder-id" || v === "builder_id") return "builder-id";
+  if (v === "enterprise" || v === "idc" || v === "iam-identity-center") return "idc";
+  if (v === "github") return "github";
+  if (v === "google") return "google";
+  return null;
+}
+
 export class KiroService {
   /**
    * Register OIDC client with AWS SSO
@@ -236,23 +252,60 @@ export class KiroService {
   }
 
   /**
-   * Validate and import refresh token
+   * Validate and import refresh token.
+   * Supports an optional credentials bundle for AWS SSO OIDC tokens
+   * (BuilderId / Enterprise) and an explicit provider hint
+   * (BuilderId / Enterprise / Github / Google) used for routing the refresh.
    */
-  async validateImportToken(refreshToken) {
-    // Validate token format
-    if (!refreshToken.startsWith("aorAAAAAG")) {
-      throw new Error("Invalid token format. Token should start with aorAAAAAG...");
+  async validateImportToken(refreshToken, options = {}) {
+    if (typeof refreshToken !== "string" || !refreshToken.trim()) {
+      throw new Error("Refresh token is required");
+    }
+    refreshToken = refreshToken.trim();
+
+    const provider = normalizeKiroProvider(options.provider);
+    const clientId = typeof options.clientId === "string" ? options.clientId.trim() : "";
+    const clientSecret = typeof options.clientSecret === "string" ? options.clientSecret.trim() : "";
+    const region = typeof options.region === "string" && options.region.trim()
+      ? options.region.trim()
+      : "us-east-1";
+    const startUrl = typeof options.startUrl === "string" ? options.startUrl.trim() : "";
+
+    // AWS SSO refresh tokens start with aorAAAAAG. Social tokens (Google/GitHub)
+    // come from a different issuer and may not match this prefix, so we only
+    // enforce the prefix when the caller is clearly using AWS SSO OIDC or did
+    // not specify a provider with social-auth credentials.
+    const looksLikeAws = refreshToken.startsWith("aorAAAAAG");
+    const isSocial = provider === "github" || provider === "google";
+    if (!looksLikeAws && !isSocial && !(clientId && clientSecret)) {
+      throw new Error("Invalid token format. AWS SSO tokens should start with aorAAAAAG...");
     }
 
-    // Try to refresh to validate
+    const authMethod = (() => {
+      if (provider === "idc") return "idc";
+      if (provider === "github") return "github";
+      if (provider === "google") return "google";
+      if (provider === "builder-id") return "builder-id";
+      // Fallback: infer from credentials.
+      return clientId && clientSecret ? "builder-id" : "imported";
+    })();
+
+    const refreshArgs = clientId && clientSecret
+      ? { authMethod, clientId, clientSecret, region }
+      : {};
+
     try {
-      const result = await this.refreshToken(refreshToken);
+      const result = await this.refreshToken(refreshToken, refreshArgs);
       return {
         accessToken: result.accessToken,
         refreshToken: result.refreshToken || refreshToken,
         profileArn: result.profileArn,
         expiresIn: result.expiresIn,
-        authMethod: "imported",
+        authMethod,
+        clientId: clientId || undefined,
+        clientSecret: clientSecret || undefined,
+        region,
+        startUrl: startUrl || undefined,
       };
     } catch (error) {
       throw new Error(`Token validation failed: ${error.message}`);

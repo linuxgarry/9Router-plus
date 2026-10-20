@@ -60,6 +60,7 @@ export async function createProxyPool(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
   const pool = {
+    ...data,
     id: data.id || uuidv4(),
     name: data.name,
     proxyUrl: data.proxyUrl,

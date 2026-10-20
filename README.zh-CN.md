@@ -1,77 +1,70 @@
+# 9Router-Plus 🚀
 
-<div align="center">
-  <img src="./images/9router.png?1" alt="9Router Dashboard" width="800"/>
-  
-  # 9Router - 免费 AI 路由器与 Token 节省器
-  
-  **编程永不停歇。使用 RTK + 自动切换到免费/低价 AI 模型，节省 20-40% 的 tokens。**
-  
-  **将所有 AI 编程工具（Claude Code、Cursor、Antigravity、Copilot、Codex、Gemini、OpenCode、Cline、OpenClaw...）连接到 40+ AI 提供商和 100+ 模型。**
-  
-  [![npm](https://img.shields.io/npm/v/9router.svg)](https://www.npmjs.com/package/9router)
-  [![Downloads](https://img.shields.io/npm/dm/9router.svg)](https://www.npmjs.com/package/9router)
-  [![License](https://img.shields.io/npm/l/9router.svg)](https://github.com/decolua/9router/blob/main/LICENSE)
-
-  <a href="https://trendshift.io/repositories/22628" target="_blank"><img src="https://trendshift.io/api/badge/repositories/22628" alt="decolua%2F9router | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-  
-  [🚀 快速开始](#-快速开始) • [💡 功能特点](#-主要功能) • [📖 设置指南](#-设置指南) • [🌐 网站](https://9router.com)
-
-  [🇻🇳 Tiếng Việt](./i18n/README.vi.md) • [🇨🇳 中文](./i18n/README.zh-CN.md) • [🇯🇵 日本語](./i18n/README.ja-JP.md)
-</div>
+> 基于 [decolua/9router](https://github.com/decolua/9router) (v0.4.52) 的二次开发分支 —— 把基础代理池面板升级为「**全栈代理网关**」,集成 Clash 订阅、WARP 多线路、Tailscale 节点探测、SSL/HTTPS 等。
 
 ---
 
-## 🤔 为什么选择 9Router？
+## ✨ 与原版的区别
 
-**告别浪费金钱、tokens 和触碰限制的困扰：**
-
-- ❌ 订阅配额每月到期却未使用
-- ❌ 速率限制在编程中途打断你
-- ❌ 工具输出（git diff、grep、ls...）快速消耗 tokens
-- ❌ 昂贵的 API（每个提供商 $20-50/月）
-- ❌ 需要手动在提供商之间切换
-
-**9Router 解决这一切：**
-
-- ✅ **RTK Token 节省器** - 自动压缩 tool_result 内容，每次请求节省 20-40% tokens
-- ✅ **充分利用订阅** - 追踪配额，在重置前用尽每一分额度
-- ✅ **自动切换** - 订阅 → 低价 → 免费，零停机时间
-- ✅ **多账户支持** - 按提供商在账户之间轮询
-- ✅ **通用兼容** - 支持 Claude Code、Codex、Cursor、Cline 以及任何 CLI 工具
+| 模块 | 原版 9router | 9Router-Plus |
+|------|-------------|--------------|
+| **代理池** | 单条 HTTP 代理列表 | Clash 订阅 + WARP + Tailscale + Vercel relay |
+| **代理内核** | 无(只存 URL) | mihomo v1.18.8 内置进 Docker |
+| **WARP** | 不支持 | 多账户 wgcf + 自定义 WireGuard 导入 + 每账户独立 endpoint |
+| **Tailscale** | 仅桌面安装流程 | 容器内置 + 邻居代理探测卡片 |
+| **SSL/HTTPS** | 不支持 | Caddy 反代 + ACME 自动续签 / 手动证书 |
+| **测速** | 简单 URL ping | 真起 mihomo listener 探测 + 出口 IP / 国家识别 |
+| **IP 检测** | ipify / ipinfo(信 XFF) | 默认改为不信 XFF 的接口(icanhazip / ifconfig.me / myip.wtf)+ 可配置目录 |
+| **多语言** | 部分支持 | 所有新卡片用英文源 + zh-CN 字典(运行时 DOM 翻译) |
+| **Docker** | 单 node 进程 | supervisor 同时管理 node + mihomo + tailscaled + caddy |
 
 ---
 
-## 🔄 工作原理
+## 🧩 新增模块
 
-```
-┌─────────────┐
-│  你的 CLI   │  (Claude Code、Codex、OpenClaw、Cursor、Cline...)
-│   工具      │
-└──────┬──────┘
-       │ http://localhost:20128/v1
-       ↓
-┌─────────────────────────────────────────────┐
-│           9Router（智能路由器）              │
-│  • RTK Token 节省器（减少 tool_result tokens）│
-│  • 格式转换（OpenAI ↔ Claude）              │
-│  • 配额追踪                                  │
-│  • 自动刷新 token                           │
-└──────┬──────────────────────────────────────┘
-       │
-       ├─→ [第一层：订阅] Claude Code、Codex、GitHub Copilot
-       │   ↓ 配额耗尽
-       ├─→ [第二层：低价] GLM ($0.6/1M)、MiniMax ($0.2/1M)
-       │   ↓ 预算超限
-       └─→ [第三层：免费] Kiro、OpenCode Free、Vertex ($300 额度)
+### 🔗 Clash 订阅(全局)
+- 输入订阅 URL → 自动拉取 YAML → 所有节点导入代理池
+- 支持手动粘贴 / 上传 YAML
+- 容器重启后自动恢复
+- 支持 ss / vmess / vless / trojan / hysteria2 / tuic / wireguard 协议
 
-结果：编程永不停歇，最小成本 + 通过 RTK 节省 20-40% tokens
-```
+### 🛡️ WARP 多线路
+- 批量 wgcf 注册(一次 1-20 个账户)
+- 每个账户绑定**随机的 Cloudflare IPv4 endpoint** → 不同 PoP → 不同出口 IP
+- 🎲 一键重排 endpoint(单条 / 全部),不需要重新注册
+- 📥 导入自定义 WireGuard 配置(粘贴多份 / 拖拽多文件)
+- checkbox 多选批量删除
+- 每行测速 + 出口 IP + 国家识别
+
+### 🔗 Tailscale 邻居代理探测
+- tailscaled 内置进 Docker(userspace-networking 模式,不需要 NET_ADMIN)
+- 🔐 在代理池页一键授权 Tailscale
+- 用同一套 用户名 / 密码 / 端口 / 类型 探测所有在线 tailnet 邻居
+- SSE 流式返回结果,实时显示延迟 + 出口 IP
+- 一键将通的代理加入代理池
+
+### 🔒 SSL / HTTPS(端点页)
+- Caddy v2.8.4 内置进镜像
+- ACME(Let's Encrypt)自动签发 + 续签 —— 或手动上传证书
+- **绑定前自动检测域名 DNS**(避免 ACME 限流)
+- HTTPS/HTTP 端口可自定义(默认 443/80)
+- 反代到 dashboard(后端可配置)
+
+### 🌐 IP 检测接口
+- 默认列表只含**不信 X-Forwarded-For** 的服务(icanhazip / ifconfig.me / ifconfig.co / myip.wtf / wtfismyip)
+- UI 下拉选择:已知接口添加 / 粘贴自定义 / 排序 / 恢复默认
+- 经 vercel-relay 或其他转发时也能拿到准确的真实出口 IP
+
+### 📊 代理池增强
+- **分组级 checkbox**:在 source 头部勾选,一次选 / 删整个订阅
+- **每行 🧪 测速**:mihomo 兼容节点走真实 listener 端口探测
+- **每行显示**:出口 IP + 国家 + 城市
+- **Vercel relay 测速**:正确返回 Vercel 数据中心 IP(而不是 server 自己的 IP)
+- **编辑连接保存**:proxyPoolId 现在能正确持久化(原版会静默丢失)
 
 ---
 
-## ⚡ 快速开始
-
-**1. 全局安装：**
+## 🐳 Docker 快速开始
 
 ```bash
 npm install -g 9router
@@ -1059,75 +1052,65 @@ docker build -t 9router .
 docker run -d \
   --name 9router \
   -p 20128:20128 \
-  --env-file /root/dev/9router/.env \
-  -v 9router-data:/app/data \
-  -v 9router-usage:/root/.9router \
-  9router
+  -p 7890:7890 \
+  -p 80:80 \
+  -p 443:443 \
+  -v /var/lib/9router:/app/data \
+  9router-plus:latest
 ```
 
-便携命令（如果你已经在仓库根目录）：
+| 端口 | 服务 |
+|------|------|
+| 20128 | Dashboard / API |
+| 7890 | mihomo 混合端口(全局代理) |
+| 80 | Caddy HTTP(ACME 验证) |
+| 443 | Caddy HTTPS(反代到 dashboard) |
+
+> 💡 80 / 443 仅在启用 SSL 时需要。不用 SSL 只映射 20128 + 7890 即可。
+
+### 从源码构建
 
 ```bash
-docker run -d \
-  --name 9router \
-  -p 20128:20128 \
-  --env-file ./.env \
-  -v 9router-data:/app/data \
-  -v 9router-usage:/root/.9router \
-  9router
+git clone https://github.com/linuxgarry/9Router-plus.git
+cd 9Router-plus
+docker build -t 9router-plus:latest .
 ```
-
-容器默认值：
-- `PORT=20128`
-- `HOSTNAME=0.0.0.0`
-
-常用命令：
-
-```bash
-docker logs -f 9router
-docker restart 9router
-docker stop 9router && docker rm 9router
-```
-
-### 环境变量
-
-| 变量 | 默认值 | 描述 |
-|----------|---------|-------------|
-| `JWT_SECRET` | 自动生成（`~/.9router/jwt-secret`） | 用于控制面板 auth cookie 的 JWT 签名密钥（设置可在多实例间共享） |
-| `INITIAL_PASSWORD` | `123456` | 当没有保存的哈希时首次登录的密码 |
-| `DATA_DIR` | `~/.9router` | 主应用数据库位置（`db.json`） |
-| `PORT` | 框架默认值 | 服务端口（示例中为 `20128`） |
-| `HOSTNAME` | 框架默认值 | 绑定主机（Docker 默认为 `0.0.0.0`） |
-| `NODE_ENV` | 运行时默认值 | 设置 `production` 用于部署 |
-| `BASE_URL` | `http://localhost:20128` | 云同步任务使用的服务端内部基础 URL |
-| `CLOUD_URL` | `https://9router.com` | 服务端云同步端点基础 URL |
-| `NEXT_PUBLIC_BASE_URL` | `http://localhost:3000` | 向后兼容/公开基础 URL（服务端运行时优先使用 `BASE_URL`） |
-| `NEXT_PUBLIC_CLOUD_URL` | `https://9router.com` | 向后兼容/公开云 URL（服务端运行时优先使用 `CLOUD_URL`） |
-| `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | 生成 API key 的 HMAC 密钥 |
-| `MACHINE_ID_SALT` | `endpoint-proxy-salt` | 稳定机器 ID 哈希的盐值 |
-| `ENABLE_REQUEST_LOGS` | `false` | 在 `logs/` 下启用请求/响应日志 |
-| `AUTH_COOKIE_SECURE` | `false` | 强制 `Secure` auth cookie（在 HTTPS 反向代理后面设置为 `true`） |
-| `REQUIRE_API_KEY` | `false` | 在 `/v1/*` 路由上强制使用 Bearer API key（面向互联网部署时推荐） |
-| `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` | 空 | 用于上游提供商调用的可选出站代理 |
-
-注意：
-- 也支持小写代理变量：`http_proxy`、`https_proxy`、`all_proxy`、`no_proxy`。
-- `.env` 不会打包到 Docker 镜像中（`.dockerignore`）；使用 `--env-file` 或 `-e` 注入运行时配置。
-- 在 Windows 上，`APPDATA` 可用于本地存储路径解析。
-- `INSTANCE_NAME` 出现在较旧的文档/环境变量模板中，但当前运行时未使用。
-
-### 运行时文件和存储
-
-- 主应用状态：`${DATA_DIR}/db.json`（提供商、组合、别名、密钥、设置），由 `src/lib/localDb.js` 管理。
-- 使用历史和日志：`${DATA_DIR}/usage.json` 和 `${DATA_DIR}/log.txt`，由 `src/lib/usageDb.js` 管理。
-- 可选的请求/翻译器日志：`ENABLE_REQUEST_LOGS=true` 时位于 `<repo>/logs/...`。
-- `${DATA_DIR}` 和 `~/.9router` 在 Docker 容器中解析到同一位置 — 符号链接 `/root/.9router -> /app/data` 在构建时创建。
-
-</details>
 
 ---
 
-## 📊 可用模型
+## 🏗️ 架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Docker 容器(node:22-alpine)                            │
+│                                                         │
+│  supervisord                                            │
+│  ├── [program:9router]    node server.js (:20128)       │
+│  ├── [program:mihomo]     mihomo -d /app/data/mihomo    │
+│  ├── [program:tailscaled] tailscaled (userspace 模式)   │
+│  └── [program:caddy]      caddy run (autostart=false)   │
+│                                                         │
+│  /app/data/(持久卷)                                     │
+│  ├── db/data.sqlite       proxyPools + clashSubs + ...  │
+│  ├── mihomo/config.yaml   9router 自动生成              │
+│  ├── tailscale/           tailnet 身份 + 状态           │
+│  ├── caddy/               Caddyfile + 证书 + 配置       │
+│  └── warp/accounts/       每账户独立 wgcf 注册          │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📝 兼容性说明
+
+- 数据卷 `/app/data` **完全兼容**原 9router 镜像
+- 已有的 SQLite 数据自动迁移(启动时声明式 schema 同步)
+- 原版所有功能(providers / connections / API keys / MITM / CLI 工具)保留
+- `↑ New version available` 提示来自上游 —— 本 fork 独立维护版本
+
+---
+
+## 🔗 相关链接
 
 <details>
 <summary><b>查看所有可用模型</b></summary>
@@ -1306,10 +1289,28 @@ Authorization: Bearer your-api-key
 
 ## 📄 许可证
 
-MIT 许可证 — 详见 [LICENSE](LICENSE)。
+同上游 —— 见 [LICENSE](./LICENSE)。
 
 ---
 
-<div align="center">
-  <sub>用 ❤️ 为 24/7 编程的开发者构建</sub>
-</div>
+## 🔧 9Router-Plus 增强（本仓库）
+
+本仓库是 [decolua/9router](https://github.com/decolua/9router) 的二次开发分支，把原项目的「代理池」从单条 HTTP 代理列表升级为「Clash 订阅 + WARP 跳板 + 一键测速 + 固定端口转发」一体化代理网关。
+
+- **Clash 订阅**：代理池页可直接粘贴订阅 URL，一键拉入所有节点（ss / vmess / vless / trojan / hysteria2 / tuic），订阅与原始 yaml 持久化到 SQLite。
+- **WARP 跳板**：容器内置 `wgcf` 自动注册，或粘贴自定义 WireGuard 配置，让节点出口经 Cloudflare WARP。
+- **CSV / YAML 批量导入**：兼容 `clashxlist_full.csv` 等格式，重名节点自动去重。
+- **内置网关进程**：镜像内含 mihomo（mixed-port 7890、external-controller 9090）、tailscaled（userspace 模式）与 caddy（按需签发 HTTPS），由 supervisor 统一托管。
+- **端口**：面板/API `20128`，mihomo 混合端口 `7890`，固定转发 `10001-10050`，可选 `80/443`（caddy）。
+
+部署与升级步骤见 [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md)，功能变更见 [`CHANGELOG-PLUS.md`](./CHANGELOG-PLUS.md)。
+
+```bash
+git clone https://github.com/linuxgarry/9Router-plus.git /opt/9Router-plus
+cd /opt/9Router-plus
+docker build -t 9router-plus:latest .
+docker run -d --name 9router --restart unless-stopped \
+  -p 20128:20128 -p 7890:7890 -p 10001-10050:10001-10050 \
+  -v /var/lib/9router:/app/data \
+  9router-plus:latest
+```

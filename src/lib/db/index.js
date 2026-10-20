@@ -29,6 +29,12 @@ export {
   createProxyPool, updateProxyPool, deleteProxyPool,
 } from "./repos/proxyPoolsRepo.js";
 
+// Clash subscriptions (mihomo-based)
+export {
+  getClashSubscriptions, getClashSubscriptionById,
+  createClashSubscription, updateClashSubscription, deleteClashSubscription,
+} from "./repos/clashSubscriptionsRepo.js";
+
 // API keys
 export {
   getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,

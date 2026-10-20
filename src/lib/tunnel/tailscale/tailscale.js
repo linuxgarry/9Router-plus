@@ -841,6 +841,47 @@ export function stopFunnel() {
   try { execSync(`"${bin}" ${SOCKET_FLAG.join(" ")} funnel --bg reset`, { stdio: "ignore", windowsHide: true }); } catch (e) { /* ignore */ }
 }
 
+/**
+ * Log out the current Tailscale identity so the next `startLogin` issues a
+ * fresh AuthURL bound to whichever account the user picks in the browser.
+ *
+ * Resolves on best-effort: returns silently when the daemon isn't running or
+ * `tailscale logout` exits non-zero — the caller is about to call startLogin
+ * which will surface any real failure via its own AuthURL flow. We also wipe
+ * the funnel so the new account doesn't inherit the old node's serve config.
+ */
+export async function logout() {
+  const bin = getTailscaleBin();
+  if (!bin) throw new Error("Tailscale not installed");
+
+  // Drop any active funnel/serve config tied to the old identity (best-effort).
+  try {
+    execSync(`"${bin}" ${SOCKET_FLAG.join(" ")} funnel --bg reset`, {
+      stdio: "ignore", windowsHide: true, timeout: 3000,
+    });
+  } catch { /* ignore */ }
+
+  try {
+    execSync(`"${bin}" ${SOCKET_FLAG.join(" ")} logout`, {
+      stdio: "ignore", windowsHide: true, timeout: 10000,
+    });
+  } catch (e) {
+    // Logout failure isn't fatal — caller will retry login. Surface only if
+    // the binary is missing or the daemon socket is gone, which we already
+    // checked above.
+    console.warn(`[Tailscale] logout failed (non-fatal): ${e.message}`);
+  }
+
+  // Invalidate caches so subsequent status reads reflect the logout
+  // immediately rather than returning the previous logged-in snapshot.
+  runningCache.value = false;
+  runningCache.fetchedAt = 0;
+  funnelUrlCache.value = null;
+  funnelUrlCache.fetchedAt = 0;
+
+  return { success: true };
+}
+
 /** Kill tailscaled daemon (runs as root, needs sudo) */
 export async function stopDaemon(sudoPassword) {
   // Try non-sudo first
